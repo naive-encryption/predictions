@@ -1,2 +1,7 @@
-.env .env.* !.env.example
-back/*.db back/*.db-* back/uploads back/tmp/
+.env 
+.env.* 
+!.env.example
+back/*.db 
+back/*.db-* 
+back/uploads 
+back/tmp/
