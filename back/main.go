@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/naive-encryption/predictions/contract"
 )
@@ -38,6 +40,16 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, contract.Error{Error: msg})
 }
 
+func requireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if DEV_ADMIN != "1" {
+			writeError(w, http.StatusForbidden, "admin only")
+			return
+		}
+		next(w, r)
+	}
+}
+
 func main() {
 	PORT = env("PORT", "8080")
 	DEV_ADMIN = env("DEV_ADMIN", "0") // TODO: convert
@@ -61,6 +73,7 @@ func main() {
 	mux.Handle("/", http.FileServer(http.Dir(STATIC_DIR)))
 
 	mux.HandleFunc("GET /api/teams", listTeams)
+	mux.HandleFunc("POST /api/admin/teams", requireAdmin(createTeam))
 
 	srv := &http.Server{Addr: ":" + PORT, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(srv.ListenAndServe())
@@ -97,4 +110,29 @@ func listTeams(w http.ResponseWriter, r *http.Request) {
 		teams = []contract.Team{}
 	}
 	writeJSON(w, http.StatusOK, teams)
+}
+
+func createTeam(w http.ResponseWriter, r *http.Request) {
+	var t contract.Team
+	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if t.ID == "" || t.Name == "" || t.Tag == "" {
+		writeError(w, http.StatusBadRequest, "id,name and tag are required")
+		return
+	}
+
+	_, err := db.Exec(r.Context(), `INSERT INTO teams (id,name,tag,logo,color) VALUES ($1,$2,$3,$4,$5)`, t.ID, t.Name, t.Tag, t.Logo, t.Color)
+
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		writeError(w, http.StatusConflict, "team id already exists")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	writeJSON(w, http.StatusCreated, t)
 }
