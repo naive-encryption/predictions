@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/naive-encryption/predictions/contract"
 )
 
@@ -14,6 +17,7 @@ var (
 	DEV_ADMIN  string
 	PORT       string
 	STATIC_DIR string
+	db         *pgxpool.Pool
 )
 
 func env(key, fallback string) string {
@@ -39,11 +43,24 @@ func main() {
 	DEV_ADMIN = env("DEV_ADMIN", "0") // TODO: convert
 	STATIC_DIR = env("STATIC_DIR", "../front/dist")
 
+	var err error
+	db, err = pgxpool.New(context.Background(), env("DATABASE_URL", ""))
+	if err != nil {
+		log.Fatal("db config: ", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(context.Background()); err != nil {
+		log.Fatal("db connect: ", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", health)
 	mux.HandleFunc("GET /api/me", me)
 	mux.HandleFunc("/api/", notFound)
 	mux.Handle("/", http.FileServer(http.Dir(STATIC_DIR)))
+
+	mux.HandleFunc("GET /api/teams", listTeams)
 
 	srv := &http.Server{Addr: ":" + PORT, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(srv.ListenAndServe())
@@ -63,4 +80,21 @@ func me(w http.ResponseWriter, r *http.Request) {
 
 func notFound(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "not found")
+}
+
+func listTeams(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query(r.Context(), `SELECT id, name, tag, logo, color FROM teams ORDER BY name`)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	teams, err := pgx.CollectRows(rows, pgx.RowToStructByName[contract.Team])
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if teams == nil {
+		teams = []contract.Team{}
+	}
+	writeJSON(w, http.StatusOK, teams)
 }
