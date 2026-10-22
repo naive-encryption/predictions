@@ -75,6 +75,7 @@ func main() {
 	mux.HandleFunc("GET /api/teams", listTeams)
 	mux.HandleFunc("POST /api/admin/teams", requireAdmin(createTeam))
 	mux.HandleFunc("DELETE /api/admin/teams/{id}", requireAdmin(deleteTeam))
+	mux.HandleFunc("PUT /api/admin/teams/{id}", requireAdmin(updateTeam))
 
 	srv := &http.Server{Addr: ":" + PORT, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(srv.ListenAndServe())
@@ -150,4 +151,34 @@ func deleteTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func updateTeam(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var t contract.Team
+	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if t.Name == "" || t.Tag == "" {
+		writeError(w, http.StatusBadRequest, "name and tag are required")
+		return
+	}
+	if t.ID != "" && t.ID != id {
+		writeError(w, http.StatusBadRequest, "id cannot be changed")
+		return
+	}
+	t.ID = id // to guarantee the same id
+
+	tag, err := db.Exec(r.Context(), `UPDATE teams SET name = $2, tag = $3, logo = $4, color = $5 WHERE id = $1`, id, t.Name, t.Tag, t.Logo, t.Color)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "no team found")
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
 }
