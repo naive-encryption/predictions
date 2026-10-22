@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:http": "VITE_API=http vite",
-    "build": "vite build",
+    "build": "VITE_API=http vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json"
   },
