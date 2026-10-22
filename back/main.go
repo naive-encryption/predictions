@@ -74,6 +74,7 @@ func main() {
 
 	mux.HandleFunc("GET /api/teams", listTeams)
 	mux.HandleFunc("POST /api/admin/teams", requireAdmin(createTeam))
+	mux.HandleFunc("DELETE /api/admin/teams/{id}", requireAdmin(deleteTeam))
 
 	srv := &http.Server{Addr: ":" + PORT, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(srv.ListenAndServe())
@@ -135,4 +136,18 @@ func createTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, t)
+}
+
+func deleteTeam(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tag, err := db.Exec(r.Context(), `DELETE FROM teams WHERE id = $1`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "team not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
