@@ -78,6 +78,7 @@ func main() {
 	mux.HandleFunc("PUT /api/admin/teams/{id}", requireAdmin(updateTeam))
 
 	mux.HandleFunc("GET /api/tournaments", listTournaments)
+	mux.HandleFunc("GET /api/tournaments/{id}", getTournament)
 
 	srv := &http.Server{Addr: ":" + PORT, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(srv.ListenAndServe())
@@ -202,4 +203,89 @@ func listTournaments(w http.ResponseWriter, r *http.Request) {
 		tournaments = []contract.TournamentSummary{}
 	}
 	writeJSON(w, http.StatusOK, tournaments)
+}
+
+func getTournament(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var t contract.Tournament
+
+	err := db.QueryRow(r.Context(),
+		`SELECT id, name, subtitle, starts_at,ends_at,status FROM tournaments WHERE id = $1`, id).Scan(&t.ID, &t.Name, &t.Subtitle, &t.StartsAt, &t.EndsAt, &t.Status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "tournament not found")
+		return
+	}
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	rows, err := db.Query(r.Context(),
+		`SELECT te.id,te.name,te.tag,te.logo,te.color
+		FROM tournament_teams tt 
+		JOIN teams te ON te.id = tt.team_id
+		WHERE tt.tournament_id = $1
+		ORDER BY te.name`, id)
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	t.Teams, err = pgx.CollectRows(rows, pgx.RowToStructByName[contract.Team])
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	rows, err = db.Query(r.Context(),
+		`SELECT id,kind,name,status,opens_at,locks_at,scoring,structure,standings,results
+		FROM phases WHERE tournament_id = $1
+		ORDER BY position`, id)
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer rows.Close()
+
+	t.Phases = []contract.Phase{}
+	for rows.Next() {
+		var p contract.Phase
+		var structure, standings, results []byte
+		err := rows.Scan(&p.ID, &p.Kind, &p.Name, &p.Status, &p.OpensAt, &p.LocksAt, &p.Scoring, &structure, &standings, &results)
+		if err != nil {
+			log.Println(err)
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		if err = json.Unmarshal(structure, &p); err != nil {
+			log.Println(err)
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		if err = json.Unmarshal(standings, &p.Standings); err != nil {
+			log.Println(err)
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		if err = json.Unmarshal(results, &p.Results); err != nil {
+			log.Println(err)
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+		t.Phases = append(t.Phases, p)
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if t.Teams == nil {
+		t.Teams = []contract.Team{}
+	}
+	writeJSON(w, http.StatusOK, t)
 }
