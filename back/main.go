@@ -77,6 +77,8 @@ func main() {
 	mux.HandleFunc("DELETE /api/admin/teams/{id}", requireAdmin(deleteTeam))
 	mux.HandleFunc("PUT /api/admin/teams/{id}", requireAdmin(updateTeam))
 
+	mux.HandleFunc("GET /api/tournaments", listTournaments)
+
 	srv := &http.Server{Addr: ":" + PORT, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(srv.ListenAndServe())
 }
@@ -181,4 +183,23 @@ func updateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
+}
+
+func listTournaments(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query(r.Context(), `SELECT t.id,t.name,t.subtitle,t.starts_at,t.ends_at,t.status, (SELECT count(*) FROM tournament_teams tt WHERE tt.tournament_id = t.id), (SELECT count(*) FROM phases p WHERE p.tournament_id= t.id) FROM tournaments t ORDER BY t.starts_at DESC`)
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	tournaments, err := pgx.CollectRows(rows, pgx.RowToStructByPos[contract.TournamentSummary])
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if tournaments == nil {
+		tournaments = []contract.TournamentSummary{}
+	}
+	writeJSON(w, http.StatusOK, tournaments)
 }
