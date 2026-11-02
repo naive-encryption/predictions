@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -282,6 +283,19 @@ func getTournament(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, t)
 }
 
+func getKnownTeamIDs(ctx context.Context) ([]string, error) {
+	rows, err := db.Query(ctx,
+		`SELECT id FROM teams`)
+	if err != nil {
+		return nil, err
+	}
+	out, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func createTournament(w http.ResponseWriter, r *http.Request) {
 	var tournament contract.TournamentInput
 	if err := json.NewDecoder(r.Body).Decode(&tournament); err != nil {
@@ -290,19 +304,19 @@ func createTournament(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if tournament.Name == "" || tournament.ID == "" {
-		writeError(w, http.StatusBadRequest, "name, id are required")
+	knownTeamIDs, err := getKnownTeamIDs(r.Context())
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	errs := validateTournament(tournament, knownTeamIDs)
+	if len(errs) != 0 {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid tournament input, found following problem(s): %s ", strings.Join(errs, ". ")))
 		return
 	}
 	if tournament.Status == "" {
 		tournament.Status = "upcoming"
-	}
-
-	for _, phase := range tournament.Phases {
-		if phase.Kind != "groups" && phase.Kind != "bracket" {
-			writeError(w, http.StatusBadRequest, "phases must be either groups or bracket")
-			return
-		}
 	}
 
 	tx, err := db.Begin(r.Context())
