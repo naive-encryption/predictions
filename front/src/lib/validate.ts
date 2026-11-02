@@ -3,6 +3,8 @@
 import type { ID, Slot, TournamentInput } from './api/types'
 
 const SLUG = /^[a-z0-9][a-z0-9-_]*$/
+// Bracket series lengths in tier-1 Dota. Bo2 is groups-only (it can end 1–1).
+const BEST_OF = [1, 3, 5]
 
 export function validateTournament(t: TournamentInput, knownTeams: Set<ID>): string[] {
   const errs: string[] = []
@@ -38,7 +40,7 @@ export function validateTournament(t: TournamentInput, knownTeams: Set<ID>): str
       const fed = new Map<string, ID>() // "ub1:winner" -> match it feeds
       for (const m of p.matches) {
         if (!rounds.has(m.roundId)) errs.push(`${at} ${m.id} is in unknown round "${m.roundId}".`)
-        if (!(m.bestOf > 0)) errs.push(`${at} ${m.id} needs bestOf ≥ 1.`)
+        if (!BEST_OF.includes(m.bestOf)) errs.push(`${at} ${m.id} must be Bo1, Bo3 or Bo5 (got Bo${m.bestOf}).`)
         for (const s of [m.a, m.b] as Slot[]) {
           if ('from' in s) {
             if (!seen.has(s.from)) errs.push(`${at} ${m.id} takes from "${s.from}", which must be listed before it.`)

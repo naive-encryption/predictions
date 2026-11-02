@@ -47,7 +47,7 @@ The UI runs these checks before it saves (`front/src/lib/validate.ts`). The serv
 - Ids are lowercase slugs and unique within their scope (phases, groups, buckets, rounds, matches).
 - Every `teamIds` entry exists, and every team used in a group or slot belongs to the tournament.
 - In each group, the bucket slots add up to the number of teams.
-- Every match's `roundId` exists and `bestOf ≥ 1`.
+- Every match's `roundId` exists and `bestOf` is 1, 3 or 5 (Bo2 is for groups only, since it can end 1–1).
 - A `from` slot refers to a match listed earlier, and each winner or loser feeds at most one slot.
 
 ## Phases
