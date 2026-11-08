@@ -83,6 +83,7 @@ func main() {
 	mux.HandleFunc("GET /api/tournaments/{id}", getTournament)
 	mux.HandleFunc("POST /api/admin/tournaments", requireAdmin(createTournament))
 	mux.HandleFunc("PUT /api/admin/tournaments/{id}", requireAdmin(updateTournament))
+	mux.HandleFunc("DELETE /api/admin/tournaments/{id}", requireAdmin(deleteTournament))
 
 	srv := &http.Server{Addr: ":" + PORT, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(srv.ListenAndServe())
@@ -573,4 +574,19 @@ func updateTournament(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, tournamentUpdated)
+}
+
+func deleteTournament(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	tags, err := db.Exec(r.Context(), `DELETE FROM tournaments WHERE id = $1`, id)
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if tags.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "Tournament id not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
