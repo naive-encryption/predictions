@@ -82,6 +82,7 @@ func main() {
 	mux.HandleFunc("GET /api/tournaments", listTournaments)
 	mux.HandleFunc("GET /api/tournaments/{id}", getTournament)
 	mux.HandleFunc("POST /api/admin/tournaments", requireAdmin(createTournament))
+	mux.HandleFunc("PUT /api/admin/tournaments/{id}", requireAdmin(updateTournament))
 
 	srv := &http.Server{Addr: ":" + PORT, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(srv.ListenAndServe())
@@ -420,4 +421,156 @@ func createTournament(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, t)
+}
+
+func updateTournament(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var t contract.TournamentInput
+	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+		log.Println(err)
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if t.ID != "" && t.ID != id {
+		writeError(w, http.StatusBadRequest, "ID cannot be changed")
+		return
+	}
+	t.ID = id
+
+	knownTeams, err := getKnownTeamIDs(r.Context())
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	if t.Status == "" {
+		t.Status = "upcoming"
+	}
+	errs := validateTournament(t, knownTeams)
+	if len(errs) != 0 {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid tournament input, found following problem(s): %s", strings.Join(errs, ". ")))
+		return
+	}
+
+	tx, err := db.Begin(r.Context())
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	var pgErr *pgconn.PgError
+	tags, err := tx.Exec(r.Context(), `UPDATE tournaments 
+		SET name=$2,subtitle=$3,starts_at=$4,ends_at=$5,status=$6 WHERE id=$1`, t.ID, t.Name, t.Subtitle, t.StartsAt, t.EndsAt, t.Status)
+	if errors.As(err, &pgErr) {
+		if pgErr.Code == "23514" {
+			writeError(w, http.StatusBadRequest, "invalid status or dates")
+			return
+		}
+	}
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	if tags.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "tournament not found")
+		return
+	}
+
+	_, err = tx.Exec(r.Context(), `DELETE FROM tournament_teams WHERE tournament_id=$1`, t.ID)
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+	for _, id := range t.TeamIDs {
+		_, err = tx.Exec(r.Context(), `INSERT into tournament_teams (team_id,tournament_id) VALUES ($1,$2)`, id, t.ID)
+		if errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "23503":
+				writeError(w, http.StatusBadRequest, "unknown team: "+id)
+				return
+			case "23505":
+				writeError(w, http.StatusBadRequest, "team listed twice: "+id)
+				return
+			}
+		}
+		if err != nil {
+			log.Println(err)
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+	}
+
+	for i, phase := range t.Phases {
+
+		var structure any
+		switch phase.Kind {
+		case "groups":
+			structure = map[string]any{"groups": phase.Groups}
+		case "bracket":
+			structure = map[string]any{"rounds": phase.Rounds, "matches": phase.Matches}
+		default:
+			writeError(w, http.StatusBadRequest, "phase "+phase.ID+": unknown kind")
+			return
+		}
+
+		standings := phase.Standings
+		if standings == nil {
+			standings = map[string]map[string][]string{}
+		}
+
+		results := phase.Results
+		if results == nil {
+			results = map[string]contract.MatchResult{}
+		}
+
+		status := phase.Status
+		if status == "" {
+			status = "upcoming"
+		}
+		_, err = tx.Exec(r.Context(), `
+			INSERT into phases 
+			(tournament_id,id,position,kind,name,status,opens_at,locks_at,scoring,structure,standings,results)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) 
+			ON CONFLICT (tournament_id, id) 
+			DO UPDATE SET
+			(position,kind,name,status,opens_at,locks_at,scoring,structure,standings,results)
+			= (EXCLUDED.position,EXCLUDED.kind,EXCLUDED.name,EXCLUDED.status,EXCLUDED.opens_at,EXCLUDED.locks_at,EXCLUDED.scoring,EXCLUDED.structure,EXCLUDED.standings,EXCLUDED.results)`,
+			t.ID, phase.ID, i, phase.Kind, phase.Name, status, phase.OpensAt, phase.LocksAt, phase.Scoring, structure, standings, results)
+		if err != nil {
+			log.Println(err)
+			writeError(w, http.StatusInternalServerError, "db error")
+			return
+		}
+	}
+	phaseIDs := make([]string, 0, len(t.Phases))
+	for _, phase := range t.Phases {
+		phaseIDs = append(phaseIDs, phase.ID)
+	}
+	_, err = tx.Exec(r.Context(), `DELETE FROM phases WHERE tournament_id = $1 AND id <> ALL($2)`, t.ID, phaseIDs)
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	err = tx.Commit(r.Context())
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	tournamentUpdated, err := loadTournament(r.Context(), t.ID)
+	if err != nil {
+		log.Println(err)
+		writeError(w, http.StatusInternalServerError, "db error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, tournamentUpdated)
 }
