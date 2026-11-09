@@ -149,8 +149,33 @@ func createTeam(w http.ResponseWriter, r *http.Request) {
 
 func deleteTeam(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	var pgErr *pgconn.PgError
 	tag, err := db.Exec(r.Context(), `DELETE FROM teams WHERE id = $1`, id)
+
+	if errors.As(err, &pgErr) {
+		if pgErr.Code == "23503" {
+
+			rows, queryErr := db.Query(r.Context(), `SELECT tournament_id FROM tournament_teams WHERE team_id = $1`, id)
+			if queryErr != nil {
+				log.Println(queryErr)
+				writeError(w, http.StatusConflict, fmt.Sprintf("Cannot delete team %q, a tournament uses it", id))
+				return
+			}
+
+			tournamenID, collectRowErr := pgx.CollectRows(rows, pgx.RowTo[string])
+			if collectRowErr != nil {
+				log.Println(collectRowErr)
+				writeError(w, http.StatusConflict, fmt.Sprintf("Cannot delete team %q, a tournament uses it", id))
+				return
+			}
+
+			writeError(w, http.StatusConflict, fmt.Sprintf("Cannot delete team %q, used by: %s", id, strings.Join(tournamenID, ", ")))
+
+			return
+		}
+	}
 	if err != nil {
+		log.Println(err)
 		writeError(w, http.StatusInternalServerError, "db error")
 		return
 	}
